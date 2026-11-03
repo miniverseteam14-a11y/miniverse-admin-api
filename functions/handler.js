@@ -1,161 +1,152 @@
-const Anthropic = require("@anthropic-ai/sdk");
-
-const client = new Anthropic();
-const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
-const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
-const AIRTABLE_API_URL = "https://api.airtable.com/v0";
-
-// Rate limit tracking: in-memory cache (resets on deployment)
 const rateLimitCache = {};
-
+ 
 function checkRateLimit(apiKey) {
   const now = Date.now();
-  const hour = Math.floor(now / 3600000);
-
+  const oneHourAgo = now - 3600000;
+ 
   if (!rateLimitCache[apiKey]) {
-    rateLimitCache[apiKey] = { hour, count: 0 };
+    rateLimitCache[apiKey] = [];
   }
-
-  const cached = rateLimitCache[apiKey];
-  if (cached.hour !== hour) {
-    cached.hour = hour;
-    cached.count = 0;
+ 
+  // Clean up old requests
+  rateLimitCache[apiKey] = rateLimitCache[apiKey].filter(
+    (timestamp) => timestamp > oneHourAgo
+  );
+ 
+  const allowed = rateLimitCache[apiKey].length < 100;
+  if (allowed) {
+    rateLimitCache[apiKey].push(now);
   }
-
-  if (cached.count >= 100) {
-    return { allowed: false, remaining: 0 };
-  }
-
-  cached.count++;
-  return { allowed: true, remaining: 100 - cached.count };
-}
-
-async function parseUserInput(userType, message) {
-  // Define role-specific prompts for Claude to parse natural language
-  const prompts = {
-    cherly: `You are parsing media spend input for Cherly. Parse this message into JSON:
-    {"amount": <number>, "vendor": "<string>", "channel": "<string>", "po_number": "<string>"}
-    Message: "${message}"
-    Return only valid JSON.`,
-
-    taylor: `You are parsing budget reallocation input for Taylor. Parse this message into JSON:
-    {"from_category": "<string>", "to_category": "<string>", "amount": <number>}
-    Message: "${message}"
-    Return only valid JSON.`,
-
-    tamar: `You are parsing approval/adjustment input for Tamar. Parse this message into JSON:
-    {"action": "approve|adjust|reject", "percent": <number or null>, "details": "<string>"}
-    Message: "${message}"
-    Return only valid JSON.`,
+ 
+  return {
+    allowed,
+    remaining: Math.max(0, 100 - rateLimitCache[apiKey].length),
   };
-
+}
+ 
+async function parseUserInput(userType, input) {
   try {
-    const response = await client.messages.create({
-      model: "claude-3-5-sonnet-20241022",
-      max_tokens: 200,
-      messages: [
-        {
-          role: "user",
-          content: prompts[userType],
-        },
-      ],
-    });
-
-    const parsed = JSON.parse(response.content[0].text);
+    // Parse input as JSON directly (no Claude API calls)
+    const parsed = typeof input === "string" ? JSON.parse(input) : input;
     return parsed;
   } catch (error) {
-    console.error("Claude parsing error:", error);
-    throw new Error("Failed to parse input");
+    throw new Error(`Failed to parse input: ${error.message}`);
   }
 }
-
+ 
 async function updateAirtable(userType, parsedData) {
-  // Map user types to Airtable tables
-  const tableNames = {
-    cherly: "Media Spend",
-    taylor: "Budget Reallocations",
-    tamar: "Approvals & Adjustments",
-  };
-
-  // Create record based on user type
-  let recordData = {};
+  const baseId = process.env.AIRTABLE_BASE_ID;
+  const apiKey = process.env.AIRTABLE_API_KEY;
+ 
+  if (!baseId || !apiKey) {
+    throw new Error("Missing Airtable credentials");
+  }
+ 
+  // Determine table name based on user type
+  let tableName = "Media Spend";
+  if (userType === "taylor") tableName = "Daily Budget";
+  if (userType === "tamar") tableName = "Approvals";
+ 
+  // Prepare the record fields
+  let fields = {};
+ 
   if (userType === "cherly") {
-    recordData = {
+    // Cherly: Media spend tracking
+    fields = {
       Amount: parsedData.amount,
       Vendor: parsedData.vendor,
       Channel: parsedData.channel,
-      PO_Number: parsedData.po_number,
+      "PO Number": parsedData.po_number,
       Timestamp: new Date().toISOString(),
-      Status: "pending",
     };
   } else if (userType === "taylor") {
-    recordData = {
-      From_Category: parsedData.from_category,
-      To_Category: parsedData.to_category,
-      Amount: parsedData.amount,
+    // Taylor: Daily budget management
+    fields = {
+      Date: parsedData.date || new Date().toISOString().split("T")[0],
+      "Budget Amount": parsedData.budget_amount,
+      Status: parsedData.status || "Pending",
+      Notes: parsedData.notes,
       Timestamp: new Date().toISOString(),
-      Status: "pending_approval",
     };
   } else if (userType === "tamar") {
-    recordData = {
+    // Tamar: Approvals/adjustments
+    fields = {
       Action: parsedData.action,
-      Adjustment_Percent: parsedData.percent || 0,
+      "Adjustment Percent": parsedData.percent,
       Details: parsedData.details,
+      "Approved By": "Tamar",
       Timestamp: new Date().toISOString(),
-      Status: parsedData.action === "approve" ? "approved" : "pending",
     };
   }
-
-  try {
-    const url = `${AIRTABLE_API_URL}/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableNames[userType])}`;
-    const response = await fetch(url, {
+ 
+  // Send to Airtable REST API
+  const response = await fetch(
+    `https://api.airtable.com/v0/${baseId}/${tableName}`,
+    {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        records: [{ fields: recordData }],
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Airtable API error: ${response.statusText}`);
+      body: JSON.stringify({ fields }),
     }
-
-    const result = await response.json();
-    return {
-      success: true,
-      recordId: result.records[0].id,
-      data: recordData,
-    };
-  } catch (error) {
-    console.error("Airtable error:", error);
-    throw new Error("Failed to update Airtable");
+  );
+ 
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Airtable error: ${response.status} - ${error}`);
   }
+ 
+  const result = await response.json();
+  return result;
 }
-
-async function handleRequest(userType, message) {
+ 
+async function handleRequest(userType, input) {
   try {
-    // Step 1: Parse natural language using Claude
-    const parsed = await parseUserInput(userType, message);
-
-    // Step 2: Update Airtable
-    const result = await updateAirtable(userType, parsed);
-
+    // Step 1: Parse the input
+    const parsedData = await parseUserInput(userType, input);
+ 
+    // Step 2: Validate required fields based on user type
+    if (userType === "cherly") {
+      if (!parsedData.amount || !parsedData.vendor) {
+        return {
+          success: false,
+          error: "Missing required fields: amount, vendor",
+        };
+      }
+    } else if (userType === "taylor") {
+      if (!parsedData.budget_amount) {
+        return {
+          success: false,
+          error: "Missing required field: budget_amount",
+        };
+      }
+    } else if (userType === "tamar") {
+      if (!parsedData.action) {
+        return {
+          success: false,
+          error: "Missing required field: action",
+        };
+      }
+    }
+ 
+    // Step 3: Update Airtable
+    const result = await updateAirtable(userType, parsedData);
+ 
     return {
       success: true,
-      message: `${userType} input received and processed`,
-      recordId: result.recordId,
-      data: result.data,
+      message: `Record created successfully for ${userType}`,
+      recordId: result.id,
+      data: result.fields,
     };
   } catch (error) {
-    console.error(`Error handling ${userType} request:`, error);
+    console.error(`Error in handleRequest for ${userType}:`, error);
     return {
       success: false,
       error: error.message,
     };
   }
 }
-
+ 
 module.exports = { checkRateLimit, handleRequest };
+ 
