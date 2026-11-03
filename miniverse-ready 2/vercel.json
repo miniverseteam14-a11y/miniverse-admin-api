@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "env": {
+    "ANTHROPIC_API_KEY": "@anthropic_api_key",
+    "AIRTABLE_API_KEY": "@airtable_api_key",
+    "AIRTABLE_BASE_ID": "@airtable_base_id",
+    "CHERLY_API_KEY": "@cherly_api_key",
+    "TAYLOR_API_KEY": "@taylor_api_key",
+    "TAMAR_API_KEY": "@tamar_api_key"
+  },
+  "routes": [
+    {
+      "src": "/api/cherly",
+      "dest": "/api/cherly.js"
+    },
+    {
+      "src": "/api/taylor",
+      "dest": "/api/taylor.js"
+    },
+    {
+      "src": "/api/tamar",
+      "dest": "/api/tamar.js"
+    }
+  ]
+}
