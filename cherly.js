@@ -33,15 +33,10 @@ module.exports = async (req, res) => {
     }
 
     // Step 3: Parse request body
-    const { message } = req.body;
-    if (!message || typeof message !== "string") {
-      return res
-        .status(400)
-        .json({ error: "Invalid request: 'message' field required" });
-    }
-
+    const input = req.body.message || JSON.stringify(req.body);
+    
     // Step 4: Handle the request
-    const result = await handleRequest("cherly", message);
+    const result = await handleRequest("cherly", input);
 
     if (result.success) {
       return res.status(200).json({
