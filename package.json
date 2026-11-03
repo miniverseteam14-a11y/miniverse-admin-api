@@ -1,0 +1,15 @@
+{
+  "name": "miniverse-admin-api",
+  "version": "1.0.0",
+  "description": "Miniverse 2027 Budget Collaborative API Bot with Natural Language Processing",
+  "main": "api/handler.js",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "keywords": ["budget", "api", "airtable", "claude", "natural-language"],
+  "author": "MGA Entertainment",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.21.0"
+  }
+}
